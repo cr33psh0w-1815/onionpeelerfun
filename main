@@ -1,0 +1,85 @@
+import requests
+from bs4 import BeautifulSoup
+import sqlite3
+import random
+import csv
+import argparse
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name)
+
+# Function to generate a random .onion address
+def generate_random_onion():
+    onion_chars = "abcdefghijklmnopqrstuvwxyz234567"
+    onion_address = ''.join(random.choice(onion_chars) for _ in range(16))
+    return onion_address + ".onion"
+
+# Function to check if an .onion address responds
+def check_onion_responsiveness(onion_address, timeout=10):
+    try:
+        response = requests.get("http://" + onion_address, proxies={'http': 'socks5h://localhost:9050', 'https': 'socks5h://localhost:9050'}, timeout=timeout)
+        if response.status_code == 200:
+            return True
+    except requests.exceptions.RequestException:
+        pass
+    return False
+
+# Function to scrape .onion websites and store them in a SQLite database
+def scrape_onion_websites(database_file, base_url, num_addresses):
+    conn = sqlite3.connect(database_file)
+    cursor = conn.cursor()
+    cursor.execute('''CREATE TABLE IF NOT EXISTS websites (
+                  id INTEGER PRIMARY KEY,
+                  title TEXT,
+                  url TEXT)''')
+
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/99.0.9999.99 Safari/537.36'}
+
+    try:
+        response = requests.get(base_url, headers=headers, proxies={'http': 'socks5h://localhost:9050', 'https': 'socks5h://localhost:9050'})
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        for link in soup.find_all('a'):
+            if '.onion' in link.get('href'):
+                url = link.get('href')
+                title = link.text
+                cursor.execute("INSERT INTO websites (title, url) VALUES (?, ?)", (title, url))
+
+        conn.commit()
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error while scraping websites: {e}")
+    finally:
+        conn.close()
+
+# Function to scrape and check .onion websites
+def scrape_and_check_onion_websites(database_file, base_url, num_addresses):
+    scrape_onion_websites(database_file, base_url, num_addresses)
+
+    responsive_addresses = []
+
+    for _ in range(num_addresses):
+        onion_address = generate_random_onion()
+        if check_onion_responsiveness(onion_address):
+            responsive_addresses.append(onion_address)
+
+    # Log responsive addresses
+    logger.info(f"Responsive .onion addresses: {responsive_addresses}")
+
+    with open('responsive_onion_addresses.csv', 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        for address in responsive_addresses:
+            writer.writerow([address])
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Scrape and check .onion websites")
+    parser.add_argument("--database", default='onion_websites.db', help="SQLite database file")
+    parser.add_argument("--url", required=True, help="Starting .onion directory URL")
+    parser.add_argument("--num-checks", type=int, default=100, help="Number of random addresses to check")
+
+    args = parser.parse_args()
+    scrape_and_check_onion_websites(args.database, args.url, args.num_checks)
